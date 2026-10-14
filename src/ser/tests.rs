@@ -167,7 +167,7 @@ fn a_failed_value_leaves_a_new_stream_new() {
     // The list's definitions are restored, then the value fails.
     let failing: Vec<Option<All>> = vec![Some(sample(3)), None];
     assert!(encoder.serialize(&failing).is_err());
-    assert!(encoder.take().is_empty());
+    assert_eq!(encoder.take(), []);
     encoder.serialize(&value).unwrap();
     assert_eq!(crate::from_slice::<All>(&encoder.take()).unwrap(), value);
 }

@@ -179,6 +179,7 @@ impl Error {
     ///
     /// It is only captured when enabled through `RUST_BACKTRACE` or
     /// `RUST_LIB_BACKTRACE`, see [`Backtrace`].
+    #[must_use]
     pub fn backtrace(&self) -> &Backtrace {
         &self.0.backtrace
     }

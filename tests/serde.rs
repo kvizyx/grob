@@ -280,7 +280,7 @@ fn values_without_a_gob_equivalent_are_data_errors() {
 fn a_failed_value_leaves_the_stream_usable() {
     let mut encoder = Encoder::new();
     encoder.serialize(&vec![Vec::<i64>::new()]).unwrap_err();
-    assert!(encoder.take().is_empty());
+    assert_eq!(encoder.take(), []);
     encoder.serialize(&Point { x: 1, y: 2 }).unwrap();
     assert_eq!(grob::from_slice::<Point>(&encoder.finish()).unwrap(), Point { x: 1, y: 2 });
 }
@@ -539,7 +539,7 @@ fn big_values_round_trip_wherever_they_are_in_a_stream() {
         assert_eq!(decoder.deserialize_from::<Vec<i64>>(&mut reader).unwrap().as_ref(), Some(value));
     }
     assert_eq!(decoder.deserialize_from::<String>(&mut reader).unwrap().as_deref(), Some("text"));
-    assert!(reader.is_empty());
+    assert_eq!(reader, []);
 
     // And taken piece by piece, as for a connection.
     let mut encoder = Encoder::new();

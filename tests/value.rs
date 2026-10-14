@@ -128,7 +128,7 @@ fn values_that_do_not_fit_their_type_are_data_errors_and_write_nothing() {
     for (i, result) in failures.into_iter().enumerate() {
         assert!(result.unwrap_err().is_data(), "case {i}");
     }
-    assert!(!before.is_empty());
+    assert_ne!(before.len(), 0);
     assert!(encoder.take().is_empty(), "failed values leave the stream untouched");
 }
 
