@@ -23,7 +23,7 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -38,7 +38,7 @@ jobs:
       matrix:
         features: [--all-features, --no-default-features]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -55,9 +55,9 @@ jobs:
       # Have Go decode what grob encodes, instead of skipping those checks.
       GROB_REQUIRE_GO: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: tests/go/go.mod
           cache-dependency-path: tests/go/go.mod
@@ -67,7 +67,7 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --all-targets --all-features
@@ -78,7 +78,7 @@ jobs:
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --locked --no-deps --all-features
@@ -89,8 +89,8 @@ jobs:
       run:
         working-directory: tests/go
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: tests/go/go.mod
           cache-dependency-path: tests/go/go.mod
@@ -104,7 +104,7 @@ jobs:
       matrix:
         target: [decode, differential, round_trip]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
       - uses: taiki-e/install-action@v2
         with:
@@ -115,12 +115,14 @@ jobs:
       - name: Seed the corpus with Go's fixtures
         run: mkdir -p fuzz/corpus/${{ matrix.target }} && cp tests/fixtures/*.gob fuzz/corpus/${{ matrix.target }}/
       - name: Fuzz
-        # A minute on pushes and pull requests, ten on the weekly run.
+        # A minute on pushes and pull requests, ten on the weekly run. The
+        # prebuilt cargo-fuzz is a musl binary, which would build for musl,
+        # where the sanitizer does not work.
         run: >
-          cargo fuzz run ${{ matrix.target }} --
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} --
           -max_len=8192 -timeout=5
           -max_total_time=${{ github.event_name == 'schedule' && 600 || 60 }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: failure()
         with:
           name: fuzz-${{ matrix.target }}
