@@ -1,62 +1,180 @@
 # grob
 
-Go's [`encoding/gob`](https://pkg.go.dev/encoding/gob) format for Rust:
-exchange data with Go programs that speak gob.
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust)](Cargo.toml)
 
-With serde (the default `serde` feature), Rust types map to Go types:
+Go's [`encoding/gob`](https://pkg.go.dev/encoding/gob) format implementation in Rust.
+
+- Serde support (the default `serde` feature): Rust types map to Go
+  types, and gob type definitions are worked out from the values.
+- Declared types: send exactly the types the Go side expects, or work
+  with dynamic `Value`s without serde.
+- Every gob type: bools, integers, floats, complex numbers, strings, byte
+  slices, arrays, slices, maps, structs including recursive ones, interface
+  values, and types that encode themselves (`GobEncoder`, `BinaryMarshaler`).
+- Streams of many values, read from any `std::io::Read`, or a stream per
+  message.
+- Zero-copy: strings and byte slices can borrow from the input.
+- Safe on untrusted input, with errors that say where they happened.
+
+## Usage
+
+### Types mapping
+
+> [!NOTE]
+> Go's implementation ignores `TextMarshaler`, so Go types that implement it travel as plain structs.
+
+| Rust                                        | Go                                                                    |
+|---------------------------------------------|-----------------------------------------------------------------------|
+| `bool`                                      | `bool`                                                                |
+| `i8`, `i16`, `i32`, `i64`                   | `int`, `int8`, `int16`, `int32`, `int64`                              |
+| `u8`, `u16`, `u32`, `u64`                   | `uint`, `uint8`, `uint16`, `uint32`, `uint64`                         |
+| `f32`, `f64`                                | `float32`, `float64`                                                  |
+| `String`, `&str`, `char`                    | `string`                                                              |
+| `Vec<u8>`                                   | `[]byte`                                                              |
+| `Vec<T>` and other sequences                | `[]T`                                                                 |
+| `[T; N]`, tuples                            | `[N]T`                                                                |
+| `HashMap<K, V>`, `BTreeMap<K, V>`           | `map[K]V`                                                             |
+| Structs                                     | Structs, matched by field name                                        |
+| `Option<T>`                                 | `*T`                                                                  |
+| Enum newtype and struct variants            | Interface values (`any`), the variant named as Go registered the type |
+| Enum unit variants                          | `string`                                                              |
+| `#[serde(with = "grob::binary_marshaler")]` | Types implementing `encoding.BinaryMarshaler`, like `uuid.UUID`       |
+| `#[serde(with = "grob::gob_encoder")]`      | Types implementing `gob.GobEncoder`                                   |
+
+Like Go, zero fields (0, false, empty strings and collections, `None`) are
+left out of structs, and come back as zero values. When types are worked out
+from values, integers must match the Go side's signedness: `int` needs a
+signed Rust integer and `uint` an unsigned one. `#[serde(flatten)]` and tuple
+enum variants have no gob equivalent.
+
+### With Serde
 
 ```rust
-#[derive(Serialize, Deserialize)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "PascalCase")] // Go's exported field names
 struct Order {
-    #[serde(rename = "ID", with = "grob::binary_marshaler")] // uuid.UUID
-    id: uuid::Uuid,
+    #[serde(rename = "ID", with = "grob::binary_marshaler")]
+    id: uuid::Uuid,       // uuid.UUID
     items: Vec<Item>,     // []Item
     note: Option<String>, // *string
     extra: Option<Extra>, // any
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+struct Item {
+    name: String,
+    count: u32,
+}
+
+/// Interface values, selected by the name Go registered their type under.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 enum Extra {
-    // Interface values, selected by the name Go registered their type under.
-    #[serde(rename = "main.Point")]
-    Point(Point),
+    #[serde(rename = "main.Item")]
+    Item(Item),
     #[serde(rename = "int")]
     Int(i64),
 }
 
+let order = Order {
+    id: uuid::Uuid::new_v4(),
+    items: vec![Item { name: "tea".into(), count: 2 }],
+    note: None,
+    extra: Some(Extra::Int(7)),
+};
 let bytes = grob::to_vec(&order)?;
-let order: Order = grob::from_slice(&bytes)?;
+assert_eq!(grob::from_slice::<Order>(&bytes)?, order);
 ```
 
-Gob type definitions are worked out from the values. Like Go, zero fields
-are left out, and come back as zero values when deserializing, so empty
-collections in structs need no type information. Integers must match the Go
-side's signedness (`int` needs a signed Rust integer, `uint` an unsigned
-one), and `#[serde(flatten)]` and tuple enum variants have no gob equivalent.
+### Declared types
 
 When the Go side expects particular types, declare them and serialize
-against them; nothing is inferred then, and integers convert when they fit:
+against them. Nothing is worked out from the values then: empty collections
+need no element type, integers convert when they fit, and type names are
+the ones you give.
+
+```rust
+use grob::{Encoder, TypeId};
+use serde::Serialize;
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct Request {
+    #[serde(rename = "ID")]
+    id: i32, // Sent as Go's uint
+    tags: Vec<String>,
+}
+
+let mut encoder = Encoder::new();
+let tags = encoder.define_slice("[]string", TypeId::STRING);
+let request = encoder.define_struct("Request", &[("ID", TypeId::UINT), ("Tags", tags)]);
+encoder.serialize_as(request, &Request { id: 7, tags: vec![] })?;
+let bytes = encoder.finish();
+```
+
+### Borrowing from the input
+
+Strings and byte slices deserialize without copying when the target borrows
+them: `&str`, `&[u8]`, or `Cow<str>` with `#[serde(borrow)]`.
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Message<'a> {
+    text: &'a str,
+    payload: &'a [u8],
+}
+
+let bytes = grob::to_vec(&Message { text: "hello", payload: b"\x01\x02" })?;
+let message: Message = grob::from_slice(&bytes)?; // Points into `bytes`
+assert_eq!(message.text, "hello");
+```
+
+### Streams
+
+A stream carries type definitions once, ahead of the first value that needs
+them. Encode values one after another, and decode them from a byte slice or
+any `std::io::Read`, such as a connection:
+
+```rust
+use grob::{Decoder, Encoder};
+
+let mut encoder = Encoder::new();
+for word in ["one", "two", "three"] {
+    encoder.serialize(word)?;
+    // encoder.take() hands out what is ready to send
+}
+let stream = encoder.finish();
+
+let mut decoder = Decoder::new();
+let mut reader = stream.as_slice();
+while let Some(word) = decoder.deserialize_from::<String>(&mut reader)? {
+    println!("{word}");
+}
+```
+
+When every message is a stream of its own, as when Go code creates a
+`gob.Encoder` per message, call `Encoder::reset` between them. The encoder
+remembers what each Rust type needed, so it does not work out the types
+again:
 
 ```rust
 let mut encoder = grob::Encoder::new();
-let tags = encoder.define_slice("", TypeId::STRING);
-let request = encoder.define_struct("Request", &[("ID", TypeId::UINT), ("Tags", tags)]);
-encoder.serialize_as(request, &Request { id: 7, tags: vec![] })?; // id: i32
+for word in ["one", "two", "three"] {
+    encoder.reset();
+    encoder.serialize(word)?;
+    let message = encoder.take(); // Decodable on its own
+}
 ```
 
-Strings and byte slices deserialize without copying when the target
-borrows them: `&str`, `&[u8]`, or `Cow<str>` with `#[serde(borrow)]`.
+### Without Serde
 
-To send each value as a stream of its own, as Go code does with a
-`gob.Encoder` per message, call `Encoder::reset` between values. The
-encoder remembers what each Rust type needed on a new stream, so it does
-not work out the types again.
-
-Errors say where they happened: `error.path()` gives the place in the value,
-like `Items[2].Name`, and `error.offset()` the byte of the stream.
-
-Without serde, values are dynamic `Value`s and types are declared:
+Values are dynamic `Value`s, encoded against declared types; the decoder
+understands any gob stream.
 
 ```rust
 use grob::{Decoder, Encoder, TypeId, Value};
@@ -70,79 +188,38 @@ let value = Decoder::new().decode(&bytes)?;
 assert_eq!(value.get("ID").and_then(Value::as_str), Some("abc"));
 ```
 
-Every gob type is supported: bools, integers, floats, complex numbers,
-strings, byte slices, arrays, slices, maps, structs including recursive ones,
-interface values, and types that encode themselves (`GobEncoder`,
-`BinaryMarshaler`). So are streams of many values, and reading them from any
-`std::io::Read`. Go's encoding/gob ignores `TextMarshaler`, so Go types that
-implement it travel as plain structs.
+### Errors
+
+Errors tell what went wrong, where in the value, and for decoding, at which
+byte of the stream:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct Order<C> {
+    items: Vec<Item<C>>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct Item<C> {
+    count: C,
+}
+
+// A count too big for the receiver's u8.
+let bytes = grob::to_vec(&Order { items: vec![Item { count: 300u32 }] })?;
+let error = grob::from_slice::<Order<u8>>(&bytes).unwrap_err();
+assert_eq!(error.path().as_deref(), Some("Items[0].Count"));
+println!("{error}"); // What went wrong, then "at Items[0].Count (byte N)"
+```
 
 ## Untrusted input
 
-Decoding is safe on input from untrusted peers: malformed data is an error,
-never a panic; lengths read from the input are checked before anything is
-allocated for them; and values nest at most 512 levels deep by default
+Decoding is safe on input from untrusted peers (malformed data is an error, not panic). Lengths read from the input are checked before anything is
+allocated for them, and values nest at most 512 levels deep by default
 (`Decoder::with_max_depth`), which keeps decoding within a 2 MiB thread stack.
-
-## Tests
-
-- `tests/value.rs` and `tests/serde.rs` cover the two APIs.
-- `tests/interop.rs` and `tests/serde.rs` check compatibility with Go both
-  ways: they decode fixtures written by Go's encoding/gob, and when `go` is
-  installed, they have Go decode what this crate encodes. The fixtures come
-  from `tests/go` (`cd tests/go && go run . gen ../fixtures`).
-- `tests/robustness.rs` feeds truncated and corrupted streams to the decoders
-  and checks the nesting limit.
-
-Tests that need Go skip themselves when `go` is not installed, unless
-`GROB_REQUIRE_GO` is set, as CI does. CI (`.github/workflows/ci.yml`) also
-runs clippy, rustdoc and the Rust 1.88 build with and without serde, and
-fuzzes each target for a minute on every push, ten minutes weekly.
-
-## Fuzzing
-
-`fuzz/` holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets,
-which need a nightly toolchain:
-
-- `decode` feeds arbitrary bytes to every decoding entry point, including
-  readers that return data in small chunks;
-- `differential` checks that decoding through `Value`s and deserializing
-  straight from the stream agree on every input;
-- `round_trip` serializes arbitrary Rust values as a stream and checks they
-  come back the same both ways.
-
-```sh
-cargo install cargo-fuzz
-mkdir -p fuzz/corpus/decode && cp tests/fixtures/*.gob fuzz/corpus/decode/
-cargo +nightly fuzz run decode
-```
-
-## Benchmarks
-
-`cargo bench` runs `benches/gob.rs`, and `cd tests/go && go test -bench .`
-runs Go's encoding/gob on the same data: 1000 orders, structs with nested
-slices, maps, strings, a UUID and an interface field, about 170 KB of gob.
-
-| | grob | Go encoding/gob |
-|---|---|---|
-| encode, serde (`to_vec`) | 2.0 ms | 1.9 ms |
-| encode, `Value` and declared types | 0.9 ms | |
-| decode, serde (`from_slice`) | 2.2 ms | 2.4 ms |
-| decode to `Value` | 2.4 ms | |
-| stream of 1000 messages, serde encode | 1.1 ms | 1.7 ms |
-| stream of 1000 messages, serde decode | 2.1 ms | 2.6 ms |
-| 1000 streams of one message, serde encode (`reset`) | 1.4 ms | |
-| 1000 streams of one message, serde encode (`to_vec`) | 16 ms | |
-
-Encoding a value of a Rust type the stream has seen before writes it
-straight away, and so does a stream after `reset`; a fresh `to_vec` first
-works out the types. Decoding mostly
-allocates the strings, vectors and maps of the result, so a faster global
-allocator helps it most.
-
-## Minimum Rust version
-
-Rust 1.88.
 
 ## License
 
