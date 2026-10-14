@@ -171,3 +171,26 @@ fn a_failed_value_leaves_a_new_stream_new() {
     encoder.serialize(&value).unwrap();
     assert_eq!(crate::from_slice::<All>(&encoder.take()).unwrap(), value);
 }
+
+#[test]
+fn new_streams_remember_interface_names_registered_without_definitions() {
+    let mut first = sample(1);
+    first.points = vec![Point { x: 1, y: 2 }];
+    first.any = Some(Any::Int(5));
+    first.anys = vec![];
+    // Registers "main.Point" for the `Point` the stream has, sending no
+    // definition.
+    let mut second = first.clone();
+    second.any = Some(Any::Point(Point { x: 3, y: 4 }));
+    // Fits what the second value left, but cannot be inferred on its own.
+    let mut third = second.clone();
+    third.grid = vec![vec![]];
+    assert!(crate::to_vec(&third).unwrap_err().is_data());
+
+    let mut encoder = Encoder::new();
+    for value in [&first, &second, &third] {
+        encoder.reset();
+        encoder.serialize(value).unwrap();
+        assert_eq!(&crate::from_slice::<All>(&encoder.take()).unwrap(), value);
+    }
+}

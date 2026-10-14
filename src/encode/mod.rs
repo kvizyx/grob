@@ -320,25 +320,27 @@ impl Encoder {
     }
 
     /// Makes a fresh stream define what it did for `rust_type` before, if
-    /// anything, and returns how many bytes of definitions that sent.
+    /// anything.
     #[cfg(feature = "serde")]
-    pub(crate) fn restore_fresh(&mut self, rust_type: &str) -> Option<usize> {
-        let fresh = self.fresh.get(rust_type)?;
-        self.state = Arc::clone(&fresh.state);
-        self.stream.extend_from_slice(&fresh.definitions);
-        Some(fresh.definitions.len())
+    pub(crate) fn restore_fresh(&mut self, rust_type: &str) {
+        if let Some(fresh) = self.fresh.get(rust_type) {
+            self.state = Arc::clone(&fresh.state);
+            self.stream.extend_from_slice(&fresh.definitions);
+        }
     }
 
     /// Remembers what the stream, fresh at `start`, defined for the value
-    /// just written of `rust_type`, if it sent more than `restored` bytes
-    /// of definitions.
+    /// just written of `rust_type`.
     #[cfg(feature = "serde")]
-    pub(crate) fn remember_fresh(&mut self, rust_type: &'static str, start: usize, restored: Option<usize>) {
-        let definitions = &self.stream[start..self.value_at];
-        if restored != Some(definitions.len()) {
-            let fresh = Fresh { state: Arc::clone(&self.state), definitions: definitions.into() };
-            self.fresh.insert(rust_type, fresh);
+    pub(crate) fn remember_fresh(&mut self, rust_type: &'static str, start: usize) {
+        // Any change to the state copies it, so an unchanged state is still
+        // the one remembered. Not every change sends definitions: an
+        // interface name may be registered for a type already defined.
+        if self.fresh.get(rust_type).is_some_and(|fresh| Arc::ptr_eq(&fresh.state, &self.state)) {
+            return;
         }
+        let definitions = self.stream[start..self.value_at].into();
+        self.fresh.insert(rust_type, Fresh { state: Arc::clone(&self.state), definitions });
     }
 
     /// Takes back everything since a fresh stream's `start`.

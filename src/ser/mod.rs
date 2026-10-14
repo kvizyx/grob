@@ -128,10 +128,10 @@ impl Encoder {
         // A new stream: start from what a new stream defined for a value of
         // this Rust type before.
         let start = self.stream_len();
-        let restored = self.restore_fresh(rust_type);
+        self.restore_fresh(rust_type);
         match self.serialize_typed(rust_type, value) {
             Ok(()) => {
-                self.remember_fresh(rust_type, start, restored);
+                self.remember_fresh(rust_type, start);
                 Ok(())
             }
             Err(error) => {
