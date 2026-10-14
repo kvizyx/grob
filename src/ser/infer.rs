@@ -199,6 +199,36 @@ pub(super) fn tuple_variant(variant: &str) -> Error {
     Error::data(format!("tuple variant {variant} has no gob equivalent"))
 }
 
+/// Whether all values of the Rust type `T` have the same shape, so one of
+/// them tells the shape of all: true for primitives and strings, which
+/// cannot be nil or fail either. Collections skip inferring the rest of
+/// their elements of such types.
+///
+/// Types are told apart by name; were the names to change, inference would
+/// only take longer.
+fn fixed_shape<T: ?Sized>() -> bool {
+    // Not `i128` and `u128`, whose values may not fit 64 bits.
+    const FIXED: &[&str] = &[
+        "bool",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "isize",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "usize",
+        "f32",
+        "f64",
+        "char",
+        "str",
+        "alloc::string::String",
+    ];
+    FIXED.contains(&std::any::type_name::<T>().trim_start_matches('&'))
+}
+
 /// Infers the type of an element, which gob always sends, so it may not be
 /// nil.
 fn element<T: Serialize + ?Sized>(schema: &mut Schema, value: &T, what: &str) -> Result<Shape, Error> {
@@ -219,9 +249,13 @@ pub(super) struct InferSeq<'s> {
 }
 
 impl InferSeq<'_> {
+    #[inline]
     fn push<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Error> {
         let index = self.count;
         self.count += 1;
+        if index > 0 && fixed_shape::<T>() {
+            return Ok(());
+        }
         element(self.schema, value, "element").and_then(|shape| self.elem.merge(shape)).map_err(|e| e.in_element(index))
     }
 
@@ -288,12 +322,18 @@ impl ser::SerializeMap for InferMap<'_> {
 
     fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), Error> {
         self.count += 1;
+        if self.count > 1 && fixed_shape::<T>() {
+            return Ok(());
+        }
         element(self.schema, key, "map key")
             .and_then(|shape| self.key.merge(shape))
             .map_err(|e| e.in_entry(self.count - 1))
     }
 
     fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Error> {
+        if self.count > 1 && fixed_shape::<T>() {
+            return Ok(());
+        }
         element(self.schema, value, "map value")
             .and_then(|shape| self.elem.merge(shape))
             .map_err(|e| e.in_entry(self.count - 1))
@@ -355,5 +395,18 @@ impl ser::SerializeStructVariant for InferStruct<'_> {
 
     fn end(self) -> Result<Inferred, Error> {
         self.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixed_shape;
+
+    #[test]
+    fn primitives_and_strings_have_fixed_shapes() {
+        assert!(fixed_shape::<i64>() && fixed_shape::<u8>() && fixed_shape::<f32>() && fixed_shape::<bool>());
+        assert!(fixed_shape::<String>() && fixed_shape::<&str>() && fixed_shape::<str>() && fixed_shape::<&&String>());
+        assert!(!fixed_shape::<i128>() && !fixed_shape::<Option<i64>>() && !fixed_shape::<Vec<u8>>());
+        assert!(!fixed_shape::<crate::Value>());
     }
 }

@@ -83,6 +83,8 @@ impl Encoder {
     }
 
     fn write_list(&mut self, w: &mut Writer, elem: TypeId, items: &[Value]) -> Result<(), Error> {
+        // Every element takes at least a byte.
+        w.reserve(items.len());
         w.uint(items.len() as u64);
         for (index, item) in items.iter().enumerate() {
             self.write_element(w, elem, item).map_err(|e| e.in_element(index))?;

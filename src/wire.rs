@@ -23,10 +23,17 @@ pub(crate) fn push_uint(buf: &mut Vec<u8>, value: u64) {
         return;
     }
     let skip = value.leading_zeros() / 8;
+    let mut bytes = [0; 9];
     // The count byte is the negated number of value bytes, 1 to 8.
     #[expect(clippy::cast_possible_truncation, reason = "skip is below 8")]
-    buf.push((skip as u8).wrapping_sub(8));
-    buf.extend_from_slice(&value.to_be_bytes()[skip as usize..]);
+    let count = (skip as u8).wrapping_sub(8);
+    bytes[0] = count;
+    // The value bytes, moved to the front. Copying all nine bytes and
+    // dropping the extra ones is faster than copying just the right number.
+    bytes[1..].copy_from_slice(&(value << (8 * skip)).to_be_bytes());
+    let len = buf.len();
+    buf.extend_from_slice(&bytes);
+    buf.truncate(len + 9 - skip as usize);
 }
 
 impl Writer {
@@ -48,8 +55,10 @@ impl Writer {
 
     #[inline]
     pub fn int(&mut self, value: i64) {
-        let shifted = value.cast_unsigned() << 1;
-        self.uint(if value < 0 { !shifted } else { shifted });
+        // Shifted left, with all bits flipped for negative values: the sign
+        // mask does that without a branch, which random signs would make
+        // costly.
+        self.uint((value.cast_unsigned() << 1) ^ (value >> 63).cast_unsigned());
     }
 
     #[inline]
@@ -99,6 +108,12 @@ impl Writer {
         push_uint(&mut self.buf, value);
         let size = self.buf.len() - end;
         self.buf[start..].rotate_right(size);
+    }
+
+    /// Makes room for `additional` more bytes.
+    #[inline]
+    pub fn reserve(&mut self, additional: usize) {
+        self.buf.reserve(additional);
     }
 
     pub fn into_inner(self) -> Vec<u8> {

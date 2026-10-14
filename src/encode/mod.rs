@@ -36,6 +36,10 @@ const BASIC_NAMES: &[(&str, TypeId)] = &[
     ("[]uint8", TypeId::BYTES),
 ];
 
+/// Messages from this size on become the stream when it is much smaller,
+/// instead of being copied into it.
+const TAKE_OVER: usize = 64 * 1024;
+
 /// Slice types Go registers out of the box, with their element types. They
 /// need a definition, which is sent the first time one is used.
 const BASIC_SLICES: &[(&str, TypeId)] = &[
@@ -368,11 +372,23 @@ impl Encoder {
         let mut w = Writer::from_vec(std::mem::take(&mut self.scratch));
         w.int(id);
         let result = build(self, &mut w);
-        let body = w.into_inner();
+        let mut body = w.into_inner();
         if result.is_ok() {
             #[cfg(feature = "serde")]
             if id > 0 {
                 self.value_at = self.stream.len();
+            }
+            if body.len() >= TAKE_OVER && self.stream.len() < body.len() / 8 {
+                // A big message: rather than copying it into the stream, the
+                // stream moves in front of it, which is less to copy.
+                let mut prefix = Vec::with_capacity(self.stream.len() + 9);
+                prefix.extend_from_slice(&self.stream);
+                push_uint(&mut prefix, body.len() as u64);
+                body.splice(..0, prefix);
+                let mut stream = std::mem::replace(&mut self.stream, body);
+                stream.clear();
+                self.scratch = stream;
+                return result;
             }
             push_uint(&mut self.stream, body.len() as u64);
             self.stream.extend_from_slice(&body);

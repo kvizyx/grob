@@ -519,3 +519,34 @@ fn zero_self_encoding_fields_are_left_out_like_go_does() {
     encoder.serialize_as(ty, &elements).unwrap();
     assert_eq!(grob::decode(&encoder.finish()).unwrap(), Value::Struct(vec![("IDs".into(), ids.unwrap())]));
 }
+
+#[test]
+fn big_values_round_trip_wherever_they_are_in_a_stream() {
+    let big: Vec<i64> = (0..50_000).map(|i| (i * 7919) % 1_000_003 - 500_000).collect();
+    assert_eq!(grob::from_slice::<Vec<i64>>(&grob::to_vec(&big).unwrap()).unwrap(), big);
+
+    // Big after small, small after big, and big after big, on one stream.
+    let mut encoder = Encoder::new();
+    let small = vec![1i64, -2];
+    for value in [&small, &big, &small, &big, &big] {
+        encoder.serialize(value).unwrap();
+    }
+    encoder.serialize("text").unwrap();
+    let stream = encoder.finish();
+    let mut reader = stream.as_slice();
+    let mut decoder = Decoder::new();
+    for value in [&small, &big, &small, &big, &big] {
+        assert_eq!(decoder.deserialize_from::<Vec<i64>>(&mut reader).unwrap().as_ref(), Some(value));
+    }
+    assert_eq!(decoder.deserialize_from::<String>(&mut reader).unwrap().as_deref(), Some("text"));
+    assert!(reader.is_empty());
+
+    // And taken piece by piece, as for a connection.
+    let mut encoder = Encoder::new();
+    let mut taken = Vec::new();
+    for value in [&big, &small, &big] {
+        encoder.serialize(value).unwrap();
+        taken.extend(encoder.take());
+    }
+    assert_eq!(Decoder::new().decode_all(&taken).unwrap().len(), 3);
+}

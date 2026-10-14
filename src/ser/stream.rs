@@ -308,11 +308,10 @@ impl<'e> ser::Serializer for StreamSerializer<'e> {
     /// Signed integers also fit `uint` types when they are not negative.
     #[inline]
     fn serialize_i64(self, v: i64) -> Result<Written> {
-        if let (Expect::Type(TypeId::UINT), Ok(unsigned)) = (self.expect, u64::try_from(v)) {
-            self.w.uint(unsigned);
-        } else {
-            self.expect(TypeId::INT, format_args!("integer {v}"))?;
-            self.w.int(v);
+        match self.expect {
+            Expect::Type(TypeId::INT) => self.w.int(v),
+            Expect::Type(TypeId::UINT) if v >= 0 => self.w.uint(v.cast_unsigned()),
+            _ => return Err(self.mismatch(format_args!("integer {v}"))),
         }
         Ok(Written::zero_if(v == 0))
     }
@@ -341,11 +340,10 @@ impl<'e> ser::Serializer for StreamSerializer<'e> {
     /// Unsigned integers also fit `int` types when they are small enough.
     #[inline]
     fn serialize_u64(self, v: u64) -> Result<Written> {
-        if let (Expect::Type(TypeId::INT), Ok(signed)) = (self.expect, i64::try_from(v)) {
-            self.w.int(signed);
-        } else {
-            self.expect(TypeId::UINT, format_args!("unsigned integer {v}"))?;
-            self.w.uint(v);
+        match self.expect {
+            Expect::Type(TypeId::UINT) => self.w.uint(v),
+            Expect::Type(TypeId::INT) if v <= i64::MAX.cast_unsigned() => self.w.int(v.cast_signed()),
+            _ => return Err(self.mismatch(format_args!("unsigned integer {v}"))),
         }
         Ok(Written::zero_if(v == 0))
     }
@@ -447,6 +445,10 @@ impl<'e> ser::Serializer for StreamSerializer<'e> {
         };
         // A `[]byte` is prefixed by its length in bytes, which is also its
         // element count.
+        // Every element takes at least a byte.
+        if let Some(len) = len {
+            self.w.reserve(len);
+        }
         let count_at = match (elem, len) {
             (Elem::Type(_), Some(len)) => {
                 self.w.uint(len as u64);
