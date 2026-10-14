@@ -94,6 +94,11 @@ allocated for them; and values nest at most 512 levels deep by default
 - `tests/robustness.rs` feeds truncated and corrupted streams to the decoders
   and checks the nesting limit.
 
+Tests that need Go skip themselves when `go` is not installed, unless
+`GROB_REQUIRE_GO` is set, as CI does. CI (`.github/workflows/ci.yml`) also
+runs clippy, rustdoc and the Rust 1.88 build with and without serde, and
+fuzzes each target for a minute on every push, ten minutes weekly.
+
 ## Fuzzing
 
 `fuzz/` holds [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets,

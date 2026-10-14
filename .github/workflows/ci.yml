@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, for longer fuzzing and new toolchain lints.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+      - run: cargo fmt --check
+        working-directory: fuzz
+
+  clippy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [--all-features, --no-default-features]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets ${{ matrix.features }} -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [--all-features, --no-default-features]
+    env:
+      # Have Go decode what grob encodes, instead of skipping those checks.
+      GROB_REQUIRE_GO: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/go/go.mod
+          cache-dependency-path: tests/go/go.mod
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked ${{ matrix.features }}
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets --all-features
+      - run: cargo check --locked --all-targets --no-default-features
+
+  docs:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --locked --no-deps --all-features
+
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/go/go.mod
+          cache-dependency-path: tests/go/go.mod
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)"
+
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [decode, differential, round_trip]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Seed the corpus with Go's fixtures
+        run: mkdir -p fuzz/corpus/${{ matrix.target }} && cp tests/fixtures/*.gob fuzz/corpus/${{ matrix.target }}/
+      - name: Fuzz
+        # A minute on pushes and pull requests, ten on the weekly run.
+        run: >
+          cargo fuzz run ${{ matrix.target }} --
+          -max_len=8192 -timeout=5
+          -max_total_time=${{ github.event_name == 'schedule' && 600 || 60 }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}

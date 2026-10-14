@@ -36,6 +36,8 @@ pub fn decode_fixture(name: &str) -> Vec<Value> {
 /// When the Go program fails, with its error output.
 pub fn go(command: &str, stream: &[u8]) -> Option<String> {
     if Command::new("go").arg("version").output().is_err() {
+        // CI sets this so that the checks against Go cannot quietly vanish.
+        assert!(std::env::var_os("GROB_REQUIRE_GO").is_none(), "GROB_REQUIRE_GO is set, but go is not installed");
         eprintln!("skipping: go is not installed");
         return None;
     }
