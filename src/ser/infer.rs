@@ -5,7 +5,7 @@ use serde::ser::{self, Impossible, Serialize};
 use super::schema::Schema;
 use super::shape::Shape;
 use crate::Error;
-use crate::external::{BINARY_MARSHALER, GOB_ENCODER};
+use crate::external::{Marshaler, marshaler};
 
 /// What inference learned about one value.
 pub(super) struct Inferred {
@@ -123,14 +123,14 @@ impl<'s> ser::Serializer for Infer<'s> {
     }
 
     fn serialize_newtype_struct<T: Serialize + ?Sized>(self, name: &'static str, value: &T) -> Result<Inferred, Error> {
-        let shape = match name {
-            BINARY_MARSHALER => Shape::BinaryMarshaler,
-            GOB_ENCODER => Shape::GobEncoder,
-            _ => return value.serialize(self),
+        let (shape, zero) = match marshaler(name) {
+            Some((Marshaler::Binary, zero)) => (Shape::BinaryMarshaler, zero),
+            Some((Marshaler::Gob, zero)) => (Shape::GobEncoder, zero),
+            None => return value.serialize(self),
         };
         // Whether the bytes are valid shows when they are written.
         let inner = value.serialize(Infer(&mut *self.0))?;
-        Ok(Inferred::new(shape, inner.zero))
+        Ok(Inferred::new(shape, zero || inner.zero))
     }
 
     fn serialize_newtype_variant<T: Serialize + ?Sized>(

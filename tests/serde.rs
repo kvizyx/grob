@@ -473,3 +473,49 @@ fn values_that_do_not_fit_declared_types_are_errors() {
     let values = Decoder::new().decode_all(&encoder.finish()).unwrap();
     assert_eq!(values, [Value::Struct(vec![("Count".into(), Value::Uint(3))])]);
 }
+
+#[test]
+fn zero_self_encoding_fields_are_left_out_like_go_does() {
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(rename = "Request")]
+    struct WithId {
+        #[serde(rename = "ID", with = "grob::binary_marshaler")]
+        id: Uuid,
+        #[serde(rename = "IDs")]
+        ids: Vec<Wrapped>,
+        #[serde(rename = "Name")]
+        name: String,
+    }
+    #[derive(Serialize)]
+    #[serde(rename = "Request")]
+    struct WithoutId {
+        #[serde(rename = "Name")]
+        name: String,
+    }
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(transparent)]
+    struct Wrapped(#[serde(with = "grob::binary_marshaler")] Uuid);
+
+    // A nil UUID field is left out, as Go leaves out zero values.
+    let nil = WithId { id: Uuid::nil(), ids: vec![], name: "x".into() };
+    let bytes = grob::to_vec(&nil).unwrap();
+    assert_eq!(bytes, grob::to_vec(&WithoutId { name: "x".into() }).unwrap());
+    assert_eq!(grob::from_slice::<WithId>(&bytes).unwrap(), nil);
+    assert_eq!(grob::to_value(&nil).unwrap().get("ID"), None);
+
+    // Elements are always sent, nil ones too.
+    let elements =
+        WithId { id: Uuid::nil(), ids: vec![Wrapped(Uuid::nil()), Wrapped(Uuid::max())], name: String::new() };
+    let bytes = grob::to_vec(&elements).unwrap();
+    assert_eq!(grob::from_slice::<WithId>(&bytes).unwrap(), elements);
+    let ids = grob::decode(&bytes).unwrap().get("IDs").cloned();
+    assert_eq!(ids, Some(Value::List(vec![Value::Bytes(vec![0; 16]), Value::Bytes(vec![0xff; 16])])));
+
+    // So with declared types.
+    let mut encoder = Encoder::new();
+    let uuid = encoder.define(grob::Type::BinaryMarshaler { name: "uuid.UUID".into() });
+    let uuids = encoder.define_slice("", uuid);
+    let ty = encoder.define_struct("Request", &[("ID", uuid), ("IDs", uuids), ("Name", grob::TypeId::STRING)]);
+    encoder.serialize_as(ty, &elements).unwrap();
+    assert_eq!(grob::decode(&encoder.finish()).unwrap(), Value::Struct(vec![("IDs".into(), ids.unwrap())]));
+}

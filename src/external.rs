@@ -10,6 +10,30 @@ use serde::de::{self, Visitor};
 /// NUL byte so no real Rust type has them.
 pub(crate) const BINARY_MARSHALER: &str = "\0grob::BinaryMarshaler";
 pub(crate) const GOB_ENCODER: &str = "\0grob::GobEncoder";
+/// The same, for values equal to their type's default: Go's zero value,
+/// which structs leave out.
+const BINARY_MARSHALER_ZERO: &str = "\0grob::BinaryMarshaler::zero";
+const GOB_ENCODER_ZERO: &str = "\0grob::GobEncoder::zero";
+
+/// Which kind of externally encoded value a serde newtype name marks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Marshaler {
+    Binary,
+    Gob,
+}
+
+/// The kind of externally encoded value the serde newtype `name` marks, and
+/// whether the value is zero; `None` for other newtypes.
+#[inline]
+pub(crate) fn marshaler(name: &str) -> Option<(Marshaler, bool)> {
+    match name {
+        BINARY_MARSHALER => Some((Marshaler::Binary, false)),
+        BINARY_MARSHALER_ZERO => Some((Marshaler::Binary, true)),
+        GOB_ENCODER => Some((Marshaler::Gob, false)),
+        GOB_ENCODER_ZERO => Some((Marshaler::Gob, true)),
+        _ => None,
+    }
+}
 
 /// Serializes a field as a Go `encoding.BinaryMarshaler`.
 ///
@@ -19,8 +43,11 @@ pub(crate) const GOB_ENCODER: &str = "\0grob::GobEncoder";
 /// which is sent as its bytes. When the Go type also implements
 /// `GobEncoder`, Go prefers that: use [`gob_encoder`](crate::gob_encoder).
 ///
-/// Go leaves zero values of such types out of structs, so a missing field
-/// deserializes as `T::default()`.
+/// Go leaves zero values of such types out of structs. Here `T::default()`
+/// stands for Go's zero value: a field equal to it is left out, and a
+/// missing field deserializes as it. So `T::default()` must be what Go's
+/// zero value marshals to, as for `uuid::Uuid` (the nil UUID) and byte
+/// arrays. Elements of slices, arrays and maps are always sent.
 ///
 /// # Examples
 ///
@@ -34,13 +61,18 @@ pub(crate) const GOB_ENCODER: &str = "\0grob::GobEncoder";
 pub mod binary_marshaler {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    /// Serializes `value` as a `BinaryMarshaler`'s bytes.
+    /// Serializes `value` as a `BinaryMarshaler`'s bytes; as a struct
+    /// field, it is left out when it equals `T::default()`.
     ///
     /// # Errors
     ///
     /// When `value` does not serialize as bytes or a string.
-    pub fn serialize<T: Serialize + ?Sized, S: Serializer>(value: &T, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_newtype_struct(super::BINARY_MARSHALER, value)
+    pub fn serialize<T: Serialize + Default + PartialEq, S: Serializer>(
+        value: &T,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let name = if *value == T::default() { super::BINARY_MARSHALER_ZERO } else { super::BINARY_MARSHALER };
+        serializer.serialize_newtype_struct(name, value)
     }
 
     /// Deserializes a `BinaryMarshaler`'s bytes, or `T::default()` when the
@@ -74,13 +106,18 @@ pub mod binary_marshaler {
 pub mod gob_encoder {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    /// Serializes `value` as a `GobEncoder`'s bytes.
+    /// Serializes `value` as a `GobEncoder`'s bytes; as a struct field, it is
+    /// left out when it equals `T::default()`.
     ///
     /// # Errors
     ///
     /// When `value` does not serialize as bytes or a string.
-    pub fn serialize<T: Serialize + ?Sized, S: Serializer>(value: &T, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_newtype_struct(super::GOB_ENCODER, value)
+    pub fn serialize<T: Serialize + Default + PartialEq, S: Serializer>(
+        value: &T,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let name = if *value == T::default() { super::GOB_ENCODER_ZERO } else { super::GOB_ENCODER };
+        serializer.serialize_newtype_struct(name, value)
     }
 
     /// Deserializes a `GobEncoder`'s bytes, or `T::default()` when the field

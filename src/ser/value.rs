@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::ser::{self, Impossible, Serialize};
 
 use super::infer::tuple_variant;
-use crate::external::{BINARY_MARSHALER, GOB_ENCODER};
+use crate::external::marshaler;
 use crate::{Error, Value};
 
 /// The bytes of an externally encoded value, which must serialize as bytes,
@@ -29,11 +29,20 @@ pub(super) fn external_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>
 pub(super) struct Built {
     pub value: Value,
     byte: bool,
+    /// An externally encoded zero value, which has bytes all the same.
+    zero: bool,
+}
+
+impl Built {
+    /// Whether structs leave the value out.
+    pub fn is_zero(&self) -> bool {
+        self.zero || self.value.is_zero()
+    }
 }
 
 impl From<Value> for Built {
     fn from(value: Value) -> Self {
-        Self { value, byte: false }
+        Self { value, byte: false, zero: false }
     }
 }
 
@@ -76,7 +85,7 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_u8(self, v: u8) -> Result<Built, Error> {
-        Ok(Built { value: Value::Uint(v.into()), byte: true })
+        Ok(Built { value: Value::Uint(v.into()), byte: true, zero: false })
     }
 
     fn serialize_u16(self, v: u16) -> Result<Built, Error> {
@@ -136,9 +145,9 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_newtype_struct<T: Serialize + ?Sized>(self, name: &'static str, value: &T) -> Result<Built, Error> {
-        match name {
-            BINARY_MARSHALER | GOB_ENCODER => Ok(Value::Bytes(external_bytes(value)?).into()),
-            _ => value.serialize(self),
+        match marshaler(name) {
+            Some((_, zero)) => Ok(Built { value: Value::Bytes(external_bytes(value)?), byte: false, zero }),
+            None => value.serialize(self),
         }
     }
 
@@ -307,9 +316,9 @@ pub(super) struct ValueStruct {
 
 impl ValueStruct {
     fn field<T: Serialize + ?Sized>(&mut self, key: &'static str, value: &T) -> Result<(), Error> {
-        let value = value.serialize(ValueSerializer).map_err(|e| e.in_field(key))?.value;
-        if !value.is_zero() {
-            self.fields.push((key.into(), value));
+        let built = value.serialize(ValueSerializer).map_err(|e| e.in_field(key))?;
+        if !built.is_zero() {
+            self.fields.push((key.into(), built.value));
         }
         Ok(())
     }

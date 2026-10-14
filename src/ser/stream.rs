@@ -14,7 +14,7 @@ use serde::ser::{self, Impossible, Serialize};
 use super::infer::tuple_variant;
 use super::value::ValueSerializer;
 use crate::encode::field_delta;
-use crate::external::{BINARY_MARSHALER, GOB_ENCODER};
+use crate::external::{Marshaler, marshaler};
 use crate::types::{Entry, TypeTable};
 use crate::wire::{Writer, push_uint};
 use crate::{Encoder, Error, Type, TypeId};
@@ -401,16 +401,22 @@ impl<'e> ser::Serializer for StreamSerializer<'e> {
     }
 
     fn serialize_newtype_struct<T: Serialize + ?Sized>(mut self, name: &'static str, value: &T) -> Result<Written> {
-        let (fits, what): (fn(&Type) -> bool, _) = match name {
-            BINARY_MARSHALER => (|ty| matches!(ty, Type::BinaryMarshaler { .. }), "BinaryMarshaler"),
-            GOB_ENCODER => (|ty| matches!(ty, Type::GobEncoder { .. }), "GobEncoder"),
-            _ => return value.serialize(self),
+        let (fits, what, zero): (fn(&Type) -> bool, _, _) = match marshaler(name) {
+            Some((Marshaler::Binary, zero)) => {
+                (|ty| matches!(ty, Type::BinaryMarshaler { .. }), "BinaryMarshaler", zero)
+            }
+            Some((Marshaler::Gob, zero)) => (|ty| matches!(ty, Type::GobEncoder { .. }), "GobEncoder", zero),
+            None => return value.serialize(self),
         };
         if !fits(&self.entry(format_args!("a {what} value"))?.ty) {
             return Err(self.mismatch(format_args!("a {what} value")));
         }
         self.expect = Expect::External;
-        value.serialize(self)
+        // Zero values still have their bytes, for when they are elements.
+        match value.serialize(self)? {
+            Written::Value if zero => Ok(Written::Zero),
+            written => Ok(written),
+        }
     }
 
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
@@ -665,7 +671,7 @@ impl<'e> StreamStruct<'e> {
     fn write_field<T: Serialize + ?Sized>(&mut self, key: &'static str, value: &T) -> Result<()> {
         let Some(index) = self.index_of(key) else {
             // Not in the definition: fine if it is left out anyway.
-            if value.serialize(ValueSerializer)?.value.is_zero() {
+            if value.serialize(ValueSerializer)?.is_zero() {
                 return Ok(());
             }
             if self.serializer.declared {
